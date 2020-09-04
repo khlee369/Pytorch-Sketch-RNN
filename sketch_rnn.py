@@ -7,7 +7,11 @@ import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
 
+from torch.autograd import Variable
+
 use_cuda = torch.cuda.is_available()
+# cudnn error
+# use_cuda = False
 
 ###################################### hyperparameters
 class HParams():
@@ -17,7 +21,7 @@ class HParams():
         self.dec_hidden_size = 512
         self.Nz = 128
         self.M = 20
-        self.dropout = 0.9
+        self.dropout = 0.1
         self.batch_size = 100
         self.eta_min = 0.01
         self.R = 0.99995
@@ -68,7 +72,7 @@ def normalize(strokes):
         data.append(seq)
     return data
 
-dataset = np.load(hp.data_location, encoding='latin1')
+dataset = np.load(hp.data_location, encoding='latin1', allow_pickle=True)
 data = dataset['train']
 data = purify(data)
 data = normalize(data)
@@ -125,7 +129,7 @@ class EncoderRNN(nn.Module):
             # then must init with zeros
             if use_cuda:
                 hidden = torch.zeros(2, batch_size, hp.enc_hidden_size).cuda()
-                cell = torch.zeros(2, batch_size, hp.enc_hidden_size.cuda()
+                cell = torch.zeros(2, batch_size, hp.enc_hidden_size).cuda()
             else:
                 hidden = torch.zeros(2, batch_size, hp.enc_hidden_size)
                 cell = torch.zeros(2, batch_size, hp.enc_hidden_size)
@@ -263,13 +267,18 @@ class Model():
         self.encoder_optimizer.step()
         self.decoder_optimizer.step()
         # some print and save:
-        if epoch%1==0:
-            print('epoch',epoch,'loss',loss.data[0],'LR',LR.data[0],'LKL',LKL.data[0])
+        if epoch%100==0:
+            print('epoch',epoch,'loss',loss.item(),'LR',LR.item(),'LKL',LKL.item())
+
+            # originally updated by epoch%10
             self.encoder_optimizer = lr_decay(self.encoder_optimizer)
             self.decoder_optimizer = lr_decay(self.decoder_optimizer)
         if epoch%100==0:
-            #self.save(epoch)
             self.conditional_generation(epoch)
+        if epoch%2000==0:
+            print('MODEL SAVED')
+            self.save(epoch)
+
 
     def bivariate_normal_pdf(self, dx, dy):
         z_x = ((dx-self.mu_x)/self.sigma_x)**2
@@ -283,8 +292,8 @@ class Model():
     def reconstruction_loss(self, mask, dx, dy, p, epoch):
         pdf = self.bivariate_normal_pdf(dx, dy)
         LS = -torch.sum(mask*torch.log(1e-5+torch.sum(self.pi * pdf, 2)))\
-            /float(Nmax*hp.batch_size)
-        LP = -torch.sum(p*torch.log(self.q))/float(Nmax*hp.batch_size)
+            /float((Nmax+1)*hp.batch_size)
+        LP = -torch.sum(p*torch.log(self.q))/float((Nmax+1)*hp.batch_size)
         return LS+LP
 
     def kullback_leibler_loss(self):
@@ -309,7 +318,7 @@ class Model():
         self.encoder.load_state_dict(saved_encoder)
         self.decoder.load_state_dict(saved_decoder)
 
-    def conditional_generation(self, epoch):
+    def conditional_generation(self, epoch, name='_output_', fpath='./image_history/'):
         batch,lengths = make_batch(1)
         # should remove dropouts:
         self.encoder.train(False)
@@ -346,7 +355,53 @@ class Model():
         y_sample = np.cumsum(seq_y, 0)
         z_sample = np.array(seq_z)
         sequence = np.stack([x_sample,y_sample,z_sample]).T
-        make_image(sequence, epoch)
+        make_image(sequence, epoch, name, fpath)
+    
+    def z_generation(self, epoch, mu, sigma, fpath='./goodbad/'):
+        batch,lengths = make_batch(1)
+        # should remove dropouts:
+        self.encoder.train(False)
+        self.decoder.train(False)
+        # encode:
+        z, _, _ = self.encoder(batch, 1)
+        z_size = hp.Nz
+
+        for i in [-0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03]:
+            name = str(i)
+            z_noise = torch.normal(mu + torch.zeros(z_size), sigma*torch.ones(z_size)).cuda()
+            z = z + z_noise.unsqueeze(0)
+
+            if use_cuda:
+                sos = Variable(torch.Tensor([0,0,1,0,0]).view(1,1,-1).cuda())
+            else:
+                sos = Variable(torch.Tensor([0,0,1,0,0]).view(1,1,-1))
+            s = sos
+            seq_x = []
+            seq_y = []
+            seq_z = []
+            hidden_cell = None
+            for i in range(Nmax):
+                input = torch.cat([s,z.unsqueeze(0)],2)
+                # decode:
+                self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
+                    self.rho_xy, self.q, hidden, cell = \
+                        self.decoder(input, z, hidden_cell)
+                hidden_cell = (hidden, cell)
+                # sample from parameters:
+                s, dx, dy, pen_down, eos = self.sample_next_state()
+                #------
+                seq_x.append(dx)
+                seq_y.append(dy)
+                seq_z.append(pen_down)
+                if eos:
+                    print(i)
+                    break
+            # visualize result:
+            x_sample = np.cumsum(seq_x, 0)
+            y_sample = np.cumsum(seq_y, 0)
+            z_sample = np.array(seq_z)
+            sequence = np.stack([x_sample,y_sample,z_sample]).T
+            make_image(sequence, epoch, name, fpath)
 
     def sample_next_state(self):
 
@@ -385,7 +440,7 @@ def sample_bivariate_normal(mu_x,mu_y,sigma_x,sigma_y,rho_xy, greedy=False):
     # inputs must be floats
     if greedy:
       return mu_x,mu_y
-    mean = [mu_x, mu_y]
+    mean = [mu_x.item(), mu_y.item()]
     sigma_x *= np.sqrt(hp.temperature)
     sigma_y *= np.sqrt(hp.temperature)
     cov = [[sigma_x * sigma_x, rho_xy * sigma_x * sigma_y],\
@@ -393,7 +448,7 @@ def sample_bivariate_normal(mu_x,mu_y,sigma_x,sigma_y,rho_xy, greedy=False):
     x = np.random.multivariate_normal(mean, cov, 1)
     return x[0][0], x[0][1]
 
-def make_image(sequence, epoch, name='_output_'):
+def make_image(sequence, epoch, name='_output_', fpath='./image_history/'):
     """plot drawing with separated strokes"""
     strokes = np.split(sequence, np.where(sequence[:,2]>0)[0]+1)
     fig = plt.figure()
@@ -404,7 +459,7 @@ def make_image(sequence, epoch, name='_output_'):
     canvas.draw()
     pil_image = PIL.Image.frombytes('RGB', canvas.get_width_height(),
                  canvas.tostring_rgb())
-    name = str(epoch)+name+'.jpg'
+    name = fpath + str(epoch)+name+'.jpg'
     pil_image.save(name,"JPEG")
     plt.close("all")
 
