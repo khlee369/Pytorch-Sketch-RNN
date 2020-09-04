@@ -18,7 +18,7 @@ model.load(encoder_pth, decoder_pth)
 ```
 
 ## Generate Samples
-create folder which name is outputs on root directory
+create folder which name is "outputs" on root directory
 ```
 $ python generator.py
 ```
