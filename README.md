@@ -1,4 +1,5 @@
 # Pytorch-Sketch-RNN
+Fork from https://github.com/alexis-jacq/Pytorch-Sketch-RNN
 A pytorch implementation of https://arxiv.org/abs/1704.03477
 
 In order to draw other things than cats, you will find more drawing data here: https://github.com/googlecreativelab/quickdraw-dataset
