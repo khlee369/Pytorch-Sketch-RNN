@@ -7,7 +7,7 @@ In order to draw other things than cats, you will find more drawing data here: h
 
 Default hyperparameters for training has been found here: https://github.com/tensorflow/magenta/blob/master/magenta/models/sketch_rnn/README.md
 
-## trained weight
+## Trained Weight
 ```python
 encoder_pth = 'encoderRNN_sel_0.579462_epoch_40000.pth'
 decoder_pth = 'decoderRNN_sel_0.579462_epoch_40000.pth'
@@ -15,4 +15,10 @@ decoder_pth = 'decoderRNN_sel_0.579462_epoch_40000.pth'
 from sketch_rnn import Model
 model = Model()
 model.load(encoder_pth, decoder_pth)
+```
+
+## Generate Samples
+create folder which name is outputs on root directory
+```
+$ python generator.py
 ```
